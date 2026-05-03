@@ -1,24 +1,18 @@
 //
 //  ContentView.swift
-//  EigenDenoise
-//
-//  Created by Euler on 5/2/26.
+//  Top-level shell — delegates to the multi-tab MainTabView.
 //
 
 import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
+        MainTabView()
     }
 }
 
 #Preview {
     ContentView()
+        .environment(AppModel.shared)
+        .frame(width: 1100, height: 720)
 }

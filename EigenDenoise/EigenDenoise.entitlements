@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App Sandbox is REQUIRED for App Store / TestFlight distribution.
+         The Image Processing tab spawns a Python subprocess via NSTask;
+         under sandbox, that interpreter has to live inside the .app bundle
+         (Contents/Resources/python/.venv/bin/python3) and inherit this
+         sandbox via `com.apple.security.inherit`. Spawning an external
+         `/Volumes/D/...` interpreter is BLOCKED — bundle it before submit. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- Network: pywebview / matplotlib font cache / NSImage URL fetches. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- File system access. The user picks a folder via NSOpenPanel; the
+         scope bookmark grant lets us re-open it next launch. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
+
+    <!-- Required for executing the bundled Python interpreter (and any
+         downstream subprocesses it forks during the rmt-denoise run). -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>

@@ -1,17 +1,37 @@
 //
 //  EigenDenoiseApp.swift
-//  EigenDenoise
-//
-//  Created by Euler on 5/2/26.
+//  Native Swift port of the Matrix Analysis Lab + RMT-Denoise pipeline.
 //
 
 import SwiftUI
 
 @main
 struct EigenDenoiseApp: App {
+    @State private var model = AppModel.shared
+
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("EigenDenoise") {
             ContentView()
+                .environment(model)
+                .frame(minWidth: 980, minHeight: 640)
+                .onAppear {
+                    // Re-acquire previously-picked folder + storage location.
+                    model.restoreStorageFromBookmark()
+                    model.restoreFolderFromBookmark()
+                }
+        }
+        .windowResizability(.contentSize)
+        .commands {
+            CommandGroup(replacing: .newItem) { }
+            CommandGroup(after: .appInfo) {
+                Divider()
+                Button("Open Folder…") { model.pickFolder() }
+                    .keyboardShortcut("o", modifiers: [.command])
+                Button("Run Denoise") { model.runDenoiseViaBridge() }
+                    .keyboardShortcut("r", modifiers: [.command])
+                Button("Clear Log") { model.clearLog() }
+                    .keyboardShortcut("l", modifiers: [.command, .shift])
+            }
         }
     }
 }

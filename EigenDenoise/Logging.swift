@@ -21,7 +21,7 @@ public enum EDLog {
     public nonisolated(unsafe) static var silenced: Set<Cat> = []
 
     @inlinable
-    public static func log(_ cat: Cat,
+    public nonisolated static func log(_ cat: Cat,
                             _ msg: @autoclosure () -> String,
                             file: StaticString = #file,
                             line: UInt = #line,
@@ -35,14 +35,14 @@ public enum EDLog {
     }
 
     @inlinable
-    public static func warn(_ cat: Cat, _ msg: @autoclosure () -> String,
+    public nonisolated static func warn(_ cat: Cat, _ msg: @autoclosure () -> String,
                              file: StaticString = #file, line: UInt = #line,
                              function: StaticString = #function) {
         log(cat, "⚠️ \(msg())", file: file, line: line, function: function)
     }
 
     @inlinable
-    public static func error(_ cat: Cat, _ msg: @autoclosure () -> String,
+    public nonisolated static func error(_ cat: Cat, _ msg: @autoclosure () -> String,
                               file: StaticString = #file, line: UInt = #line,
                               function: StaticString = #function) {
         log(cat, "❌ \(msg())", file: file, line: line, function: function)

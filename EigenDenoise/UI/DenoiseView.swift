@@ -302,6 +302,7 @@ struct DenoiseView: View {
     private var plotsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             statusRow
+            progressBar
             if let r = model.lastBridgeResult {
                 metricsCard(r)
                 imagesCard
@@ -312,6 +313,38 @@ struct DenoiseView: View {
                         .foregroundStyle(Palette.text)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var progressBar: some View {
+        if model.isDenoising || (model.denoiseProgress.fraction > 0 && model.denoiseProgress.fraction < 1) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .symbolEffect(.rotate, isActive: model.isDenoising)
+                        .foregroundStyle(Palette.accent)
+                    Text(model.denoiseProgress.stage)
+                        .font(.caption.bold())
+                        .foregroundStyle(Palette.text)
+                    Spacer()
+                    Text("\(Int(model.denoiseProgress.fraction * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(Palette.muted)
+                }
+                ProgressView(value: model.denoiseProgress.fraction)
+                    .progressViewStyle(.linear)
+                    .tint(Palette.accent)
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.cornerMd, style: .continuous)
+                    .fill(Color(white: 0.97))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.cornerMd, style: .continuous)
+                    .stroke(Palette.accent.opacity(0.4), lineWidth: 0.8)
+            )
         }
     }
 
@@ -346,7 +379,16 @@ struct DenoiseView: View {
     }
 
     private func metricsCard(_ r: RMTBridgeResult) -> some View {
-        Card(title: "Metrics", systemImage: "checkmark.seal.fill") {
+        Card(title: "Metrics", systemImage: "checkmark.seal.fill",
+              trailing: AnyView(
+                Link(destination: EigenvalueView.researchPaperURL) {
+                    Label("Gen-Cov paper (PDF)", systemImage: "doc.richtext.fill")
+                        .font(.caption.bold())
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+              )
+        ) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
                 GridRow {
                     MetricBadge(label: "PSNR — M-P (dB)",
@@ -384,23 +426,89 @@ struct DenoiseView: View {
     }
 
     private var imagesCard: some View {
-        Card(title: "Images", systemImage: "photo.on.rectangle.angled") {
+        @Bindable var m = model
+        return Card(title: "Images", systemImage: "photo.on.rectangle.angled",
+                     trailing: AnyView(
+                        Group {
+                            if let s = model.selectedOutput {
+                                Pill(text: "viewing: \(label(for: s))",
+                                     color: tint(for: s),
+                                     systemImage: "eye")
+                            } else {
+                                Pill(text: "tap an image to inspect its eigen-range",
+                                     color: .gray, systemImage: "hand.tap")
+                            }
+                        }
+                     )
+        ) {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                ImageTile(title: "Original (clean)", image: model.bridgeCleanImage)
-                ImageTile(title: "Noisy",            image: model.bridgeNoisyImage)
-                ImageTile(title: "M-P denoised",     image: model.bridgeMPImage)
-                ImageTile(title: "Gen-Cov denoised — rmt-denoise", image: model.bridgeGenImage)
+                clickableTile(.clean, "Original (clean)",                       model.bridgeCleanImage)
+                clickableTile(.noisy, "Noisy",                                   model.bridgeNoisyImage)
+                clickableTile(.mp,    "M-P denoised",                            model.bridgeMPImage)
+                clickableTile(.gen,   "Gen-Cov denoised — rmt-denoise",          model.bridgeGenImage)
             }
         }
     }
 
+    private func label(for s: AppModel.SelectedOutput) -> String {
+        switch s {
+        case .clean: return "Original"
+        case .noisy: return "Noisy"
+        case .mp:    return "M-P"
+        case .gen:   return "Gen-Cov"
+        }
+    }
+    private func tint(for s: AppModel.SelectedOutput) -> Color {
+        switch s {
+        case .clean: return .gray
+        case .noisy: return .orange
+        case .mp:    return .blue
+        case .gen:   return .green
+        }
+    }
+
+    @ViewBuilder
+    private func clickableTile(_ kind: AppModel.SelectedOutput, _ title: String, _ image: NSImage?) -> some View {
+        let isSel = model.selectedOutput == kind
+        ImageTile(title: title, image: image)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(isSel ? tint(for: kind) : .clear, lineWidth: isSel ? 3 : 0)
+                    .padding(-2)
+            )
+            .shadow(color: isSel ? tint(for: kind).opacity(0.4) : .clear, radius: 8)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                model.selectedOutput = (model.selectedOutput == kind) ? nil : kind
+            }
+    }
+
     private func eigenvaluesCard(_ r: RMTBridgeResult) -> some View {
-        struct Pt: Identifiable { let id = UUID(); let i: Int; let v: Double }
-        let pts: [Pt] = r.eigenvalues.enumerated().map { Pt(i: $0.offset + 1, v: $0.element) }
+        struct Pt: Identifiable { let id = UUID(); let i: Int; let v: Double; let kind: String }
+        let sel = model.selectedOutput
         let lamMP  = (r.rankMP > 0 && r.rankMP <= r.eigenvalues.count) ? r.eigenvalues[r.rankMP - 1] : nil
         let lamGen = (r.rankGen > 0 && r.rankGen <= r.eigenvalues.count) ? r.eigenvalues[r.rankGen - 1] : nil
-        EDLog.log(.ui, "eigenvaluesCard render — eigs=\(r.eigenvalues.count) rankMP=\(r.rankMP) rankGen=\(r.rankGen) lamMP=\(lamMP.map { String(format: "%.3g", $0) } ?? "nil") lamGen=\(lamGen.map { String(format: "%.3g", $0) } ?? "nil")")
-        return Card(title: "Top eigenvalues of the noisy stack",
+        let pts: [Pt] = r.eigenvalues.enumerated().map { (i, v) in
+            let rank = i + 1
+            let kept: String
+            switch sel {
+            case .mp:    kept = (rank <= r.rankMP)  ? "kept" : "dropped"
+            case .gen:   kept = (rank <= r.rankGen) ? "kept" : "dropped"
+            case .clean, .noisy, .none: kept = "neutral"
+            }
+            return Pt(i: rank, v: v, kind: kept)
+        }
+        let title: String = {
+            switch sel {
+            case .mp:    return "Eigenvalues — M-P keeps top \(r.rankMP)"
+            case .gen:   return "Eigenvalues — Gen-Cov keeps top \(r.rankGen)"
+            case .clean: return "Eigenvalues — original (no spectral truncation)"
+            case .noisy: return "Eigenvalues — noisy (no truncation applied)"
+            case .none:  return "Top eigenvalues of the noisy stack"
+            }
+        }()
+        EDLog.log(.ui, "eigenvaluesCard render — sel=\(sel?.rawValue ?? "nil") eigs=\(r.eigenvalues.count) rankMP=\(r.rankMP) rankGen=\(r.rankGen)")
+        return Card(title: title,
                      systemImage: "chart.bar",
                      trailing: AnyView(
                         Pill(text: "centred  λ = σ²/n",
@@ -408,16 +516,26 @@ struct DenoiseView: View {
                      )
         ) {
             Chart {
+                // Shaded range highlighting which indices the selected method kept.
+                if sel == .mp, r.rankMP > 0 {
+                    RectangleMark(xStart: .value("start", 0.5),
+                                   xEnd:   .value("end",   Double(r.rankMP) + 0.5))
+                        .foregroundStyle(Color.blue.opacity(0.13))
+                }
+                if sel == .gen, r.rankGen > 0 {
+                    RectangleMark(xStart: .value("start", 0.5),
+                                   xEnd:   .value("end",   Double(r.rankGen) + 0.5))
+                        .foregroundStyle(Color.green.opacity(0.13))
+                }
                 ForEach(pts) { p in
                     BarMark(x: .value("rank i", p.i), y: .value("λ", p.v))
-                        .foregroundStyle(LinearGradient(colors: [Palette.accent, Palette.accent2],
-                                                         startPoint: .top, endPoint: .bottom))
-                        .opacity(0.85)
+                        .foregroundStyle(barColor(for: p.kind, sel: sel))
+                        .opacity(p.kind == "dropped" ? 0.35 : 0.9)
                 }
                 if let lam = lamMP {
                     RuleMark(y: .value("MP cutoff", lam))
                         .foregroundStyle(.blue)
-                        .lineStyle(.init(lineWidth: 1, dash: [4, 3]))
+                        .lineStyle(.init(lineWidth: sel == .mp ? 2 : 1, dash: [4, 3]))
                         .annotation(position: .top, alignment: .leading) {
                             Text("MP r̂ = \(r.rankMP)")
                                 .font(.caption2.bold()).foregroundStyle(.blue)
@@ -426,7 +544,7 @@ struct DenoiseView: View {
                 if let lam = lamGen {
                     RuleMark(y: .value("Gen cutoff", lam))
                         .foregroundStyle(.green)
-                        .lineStyle(.init(lineWidth: 1, dash: [4, 3]))
+                        .lineStyle(.init(lineWidth: sel == .gen ? 2 : 1, dash: [4, 3]))
                         .annotation(position: .top, alignment: .trailing) {
                             Text("Gen r̂ = \(r.rankGen)")
                                 .font(.caption2.bold()).foregroundStyle(.green)
@@ -439,9 +557,27 @@ struct DenoiseView: View {
             // zero baseline and log(0) is undefined → Swift Charts trips an
             // internal precondition (manifests as EXC_BREAKPOINT). Linear is fine.
             .frame(minHeight: 260)
-            Text("Bars are the top 60 eigenvalues of the centred noisy stack (1/n) X̃ X̃ᵀ. Dashed rules mark the rank cutoffs each method picked: M-P keeps the top \(r.rankMP) components (above the array length here, so MP rule is hidden); Gen-Cov keeps \(r.rankGen).")
+            Text("Bars are the top eigenvalues of the centred noisy stack (1/n) X̃ X̃ᵀ. Dashed rules mark each method's rank cutoff. Tap an output image above to highlight which eigenvalues that method kept (saturated) versus dropped (faded).")
                 .font(.caption)
                 .foregroundStyle(Palette.muted)
+        }
+    }
+
+    private func barColor(for kind: String, sel: AppModel.SelectedOutput?) -> AnyShapeStyle {
+        switch sel {
+        case .mp:
+            return kind == "kept"
+                ? AnyShapeStyle(LinearGradient(colors: [.blue, Palette.accent2],
+                                                startPoint: .top, endPoint: .bottom))
+                : AnyShapeStyle(Color.gray.opacity(0.5))
+        case .gen:
+            return kind == "kept"
+                ? AnyShapeStyle(LinearGradient(colors: [.green, .mint],
+                                                startPoint: .top, endPoint: .bottom))
+                : AnyShapeStyle(Color.gray.opacity(0.5))
+        case .clean, .noisy, .none:
+            return AnyShapeStyle(LinearGradient(colors: [Palette.accent, Palette.accent2],
+                                                 startPoint: .top, endPoint: .bottom))
         }
     }
 }

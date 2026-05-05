@@ -76,19 +76,24 @@ public enum SpikedSimulation {
     /// uses MPSMatrixMultiplication on the GPU when available and
     /// Accelerate cblas_dgemm otherwise. Returns the p ascending
     /// eigenvalues of B = S × T together with the device that was used.
-    public static func eigenvalues(p: Int, n: Int, a: Double, beta: Double,
-                                    seed: UInt64,
-                                    forceCPU: Bool = false) -> SpikedSimulationResult {
+    public nonisolated static func eigenvalues(p: Int, n: Int, a: Double, beta: Double,
+                                                 seed: UInt64,
+                                                 forceCPU: Bool = false,
+                                                 progress: (@Sendable (Double, String) -> Void)? = nil)
+        -> SpikedSimulationResult
+    {
         EDLog.log(.sim, "spiked simulation — p=\(p) n=\(n) a=\(a) beta=\(beta) seed=\(seed) forceCPU=\(forceCPU)")
         if p <= 0 || n <= 0 {
             EDLog.error(.sim, "invalid dims p=\(p) n=\(n)")
         }
         precondition(p > 0 && n > 0)
         let t0 = Date()
+        progress?(0.05, "Sampling X ~ N(0,1) (\(p)×\(n))")
         var rng = EighNormalRNG(seed: seed)
         var X = [Double](repeating: 0, count: p * n)
         for i in 0..<(p * n) { X[i] = rng.next() }
 
+        progress?(0.30, "Computing Gram S = (1/n) X Xᵀ")
         let (S, gramDevice): ([Double], ComputeDevice) = {
             if forceCPU {
                 return (cpuGram(X, p: p, n: n), .accelerate)
@@ -96,6 +101,7 @@ public enum SpikedSimulation {
             return MetalCompute.shared.gramMatrix(X, p: p, n: n)
         }()
 
+        progress?(0.55, "Building T^{1/2} S T^{1/2}")
         let kSpike = Int((Double(p) * beta).rounded(.down))
         var M = [Double](repeating: 0, count: p * p)
         for i in 0..<p {
@@ -105,13 +111,15 @@ public enum SpikedSimulation {
                 M[i * p + j] = S[i * p + j] * ti * tj
             }
         }
+        progress?(0.70, "Eigendecomposing (LAPACK dsyevd, p=\(p))")
         let eigs = SymEigen.eigenvalues(M, n: p)
+        progress?(1.0, "Done")
         let dt = Date().timeIntervalSince(t0)
         return .init(eigenvalues: eigs, device: gramDevice, elapsedSec: dt)
     }
 
     /// Direct CPU Gram (used when forceCPU=true).
-    private static func cpuGram(_ X: [Double], p: Int, n: Int) -> [Double] {
+    private nonisolated static func cpuGram(_ X: [Double], p: Int, n: Int) -> [Double] {
         var S = [Double](repeating: 0, count: p * p)
         Accelerate.cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                                 Int32(p), Int32(p), Int32(n),

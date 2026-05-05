@@ -66,6 +66,15 @@ final class AppModel {
     var lastCleanTest: [Float] = []
     var lastNoisyTest: [Float] = []
     var isDenoising: Bool = false
+    /// Live progress while the denoise pipeline runs.
+    var denoiseProgress: (fraction: Double, stage: String) = (0, "")
+    /// Which output tile the user has selected — drives eigenvalue-range
+    /// highlighting in the eigenvalue chart. `nil` = no tile selected.
+    var selectedOutput: SelectedOutput? = nil
+
+    enum SelectedOutput: String, Sendable, CaseIterable {
+        case clean, noisy, mp, gen
+    }
 
     // ---- storage location (where downloaded datasets live) -------------
 
@@ -181,17 +190,37 @@ final class AppModel {
 
     func loadFolder(_ url: URL) {
         EDLog.log(.folder, "loadFolder — path=\(url.path) resize=\(resizeH)×\(resizeW)")
-        // Persist a security-scoped bookmark so the user doesn't have to
-        // re-pick the folder every launch.
-        do {
-            let bookmark = try url.bookmarkData(options: .withSecurityScope,
-                                                  includingResourceValuesForKeys: nil,
-                                                  relativeTo: nil)
-            UserDefaults.standard.set(bookmark, forKey: AppModel.bookmarkKey)
-        } catch {
-            EDLog.warn(.folder, "failed to write bookmark: \(error.localizedDescription)")
+        // Only persist a security-scoped bookmark for paths OUTSIDE the
+        // app's own sandbox container. Paths inside our Application Support
+        // (e.g. downloaded datasets) don't need a bookmark — and asking for
+        // one with .withSecurityScope can fail on app-owned URLs.
+        if !isInsideAppContainer(url) {
+            do {
+                let bookmark = try url.bookmarkData(options: .withSecurityScope,
+                                                      includingResourceValuesForKeys: nil,
+                                                      relativeTo: nil)
+                UserDefaults.standard.set(bookmark, forKey: AppModel.bookmarkKey)
+            } catch {
+                EDLog.warn(.folder, "failed to write bookmark: \(error.localizedDescription)")
+            }
+        } else {
+            EDLog.log(.folder, "skipping bookmark — path is inside app container")
         }
         loadFolderInternal(url, fromBookmark: false)
+    }
+
+    /// Returns true when `url` is rooted inside this app's sandbox container
+    /// (Application Support / Caches / Documents / tmp). Such paths are
+    /// always readable without a security-scoped bookmark.
+    private func isInsideAppContainer(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        let containers = [
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.path,
+            FileManager.default.urls(for: .cachesDirectory,             in: .userDomainMask).first?.path,
+            FileManager.default.urls(for: .documentDirectory,           in: .userDomainMask).first?.path,
+            NSTemporaryDirectory() as String?,
+        ].compactMap { $0 }
+        return containers.contains { path.hasPrefix($0) }
     }
 
     /// Re-acquire access from a stored bookmark on launch (used by AppDelegate).
@@ -215,6 +244,13 @@ final class AppModel {
         let didStart = url.startAccessingSecurityScopedResource()
         EDLog.log(.folder, "loadFolderInternal — startAccess=\(didStart) fromBookmark=\(fromBookmark)")
         folderURL = url
+        // Clear stale state synchronously so the UI reflects the new
+        // selection immediately (sub-folder chips, test-image picker,
+        // thumbnail grid, etc.). The async ImageIO load below repopulates.
+        folderSubfolders = []
+        imageNames = []
+        imageData = []
+        testFilename = ""
         // List sub-folders for the Image library card (sandbox-safe).
         let fm = FileManager.default
         if let names = try? fm.contentsOfDirectory(atPath: url.path) {
@@ -321,9 +357,15 @@ final class AppModel {
         )
         log("running native denoise method=\(runMethod.rawValue) device=\(device) n=\(trainIdxs.count) test=\(testFilename) T=\(applyT ? "on" : "off") resize=\(colorResize ? "on" : "off") center=\(center ? "on" : "off") noise=\(noiseConfig.enabled ? noiseConfig.kind.label : "off") …")
         isDenoising = true
+        denoiseProgress = (0, "Starting…")
+        selectedOutput = nil
         let captured = self
         Task.detached {
-            let r = NativeDenoise.run(job)
+            let r = NativeDenoise.run(job) { frac, stage in
+                Task { @MainActor in
+                    captured.denoiseProgress = (frac, stage)
+                }
+            }
             await MainActor.run {
                 // Synthesise the existing bridge-shaped result so DenoiseView keeps working.
                 let synthesised = RMTBridgeResult(
@@ -345,6 +387,7 @@ final class AppModel {
                 captured.bridgeGenImage      = ImageIO.nsImage(r.genImage,      H: r.H, W: r.W)
                 captured.bridgeResidualImage = ImageIO.nsImage(r.residualImage, H: r.H, W: r.W)
                 captured.isDenoising = false
+                captured.denoiseProgress = (1.0, "Done")
                 captured.log(String(format: "done in %.2fs — MP: PSNR=%.2fdB r̂=%d   Gen-Cov: PSNR=%.2fdB r̂=%d  â=%.3f β̂=%.3f  device=%@",
                                      r.elapsed, r.psnrMP, r.rankMP,
                                      r.psnrGen, r.rankGen, r.a, r.beta,

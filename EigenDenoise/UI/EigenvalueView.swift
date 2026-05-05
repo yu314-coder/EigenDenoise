@@ -30,6 +30,8 @@ struct EigenvalueView: View {
     @State private var useGPU: Bool = MetalCompute.shared.isAvailable
     @State private var deviceUsed: ComputeDevice = .accelerate
     @State private var showFyH: Bool = true       // Yu (2025) closed-form density overlay
+    @State private var progressFraction: Double = 0
+    @State private var progressStage: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -113,13 +115,16 @@ struct EigenvalueView: View {
 
     private var plotsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Card(title: "Matrix construction & theory", systemImage: "function") {
+            progressBar
+            Card(title: "Matrix construction & theory", systemImage: "function",
+                  trailing: AnyView(researchPaperLink)) {
                 EquationPanel(title: "Matrix model & spike construction") {
                     Text("B_n = S_n × T_n")
                     Text("S_n = (1/n) · X · Xᵀ      with X ~ N(0, 1)^{p×n}")
                     Text("T_n = diag(a, …, a, 1, …, 1)   first ⌊β·p⌋ entries are a")
                     Text("y = p / n   ·   a = spike value   ·   β = spike fraction")
                 }
+                paperBlurb
             }
             Card(title: "Eigenvalue histogram", systemImage: "chart.bar.xaxis",
                   trailing: AnyView(
@@ -282,17 +287,83 @@ struct EigenvalueView: View {
 
     private func generate() {
         running = true
+        progressFraction = 0
+        progressStage = "Starting…"
         let p = pRows, n = nSamples, beta_ = beta, a_ = a, s_ = seed
         let cpuOnly = !useGPU
         Task.detached {
             let r = SpikedSimulation.eigenvalues(p: p, n: n, a: a_, beta: beta_,
-                                                  seed: s_, forceCPU: cpuOnly)
+                                                  seed: s_, forceCPU: cpuOnly,
+                                                  progress: { frac, stage in
+                Task { @MainActor in
+                    self.progressFraction = frac
+                    self.progressStage = stage
+                }
+            })
             await MainActor.run {
                 self.eigs = r.eigenvalues
                 self.elapsed = r.elapsedSec
                 self.deviceUsed = r.device
                 self.running = false
+                self.progressFraction = 1.0
+                self.progressStage = "Done"
             }
+        }
+    }
+
+    /// Public link to the research paper that derives the Gen-Cov method
+    /// and the closed-form spectral density used here.
+    static let researchPaperURL = URL(string:
+        "https://yu314-coder.github.io/assets/docs/yau-science-award-research-paper.pdf")!
+
+    private var researchPaperLink: some View {
+        Link(destination: Self.researchPaperURL) {
+            Label("Research paper (PDF)", systemImage: "doc.richtext.fill")
+                .font(.caption.bold())
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+    }
+
+    private var paperBlurb: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "graduationcap.fill").foregroundStyle(Palette.accent)
+            Text("The closed-form density F_{y,H}(z) and Case 1/2/3 support analysis used above are derived in:")
+                .font(.caption2).foregroundStyle(Palette.muted)
+            Link("Yu (2025) — Geometric Analysis of the Eigenvalue Range of the Generalized Covariance Matrix",
+                  destination: Self.researchPaperURL)
+                .font(.caption2.bold())
+                .foregroundStyle(Palette.accent)
+        }
+    }
+
+    @ViewBuilder
+    private var progressBar: some View {
+        if running || (progressFraction > 0 && progressFraction < 1) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .symbolEffect(.rotate, isActive: running)
+                        .foregroundStyle(Palette.accent)
+                    Text(progressStage)
+                        .font(.caption.bold())
+                        .foregroundStyle(Palette.text)
+                    Spacer()
+                    Text("\(Int(progressFraction * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(Palette.muted)
+                }
+                ProgressView(value: progressFraction).progressViewStyle(.linear).tint(Palette.accent)
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.cornerMd, style: .continuous)
+                    .fill(Color(white: 0.97))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.cornerMd, style: .continuous)
+                    .stroke(Palette.accent.opacity(0.4), lineWidth: 0.8)
+            )
         }
     }
 

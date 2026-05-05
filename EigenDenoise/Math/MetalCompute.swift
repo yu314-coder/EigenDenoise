@@ -23,11 +23,11 @@ public enum ComputeDevice: String, Sendable {
 }
 
 public final class MetalCompute: @unchecked Sendable {
-    public static let shared = MetalCompute()
+    public nonisolated(unsafe) static let shared = MetalCompute()
 
-    public let device: MTLDevice?
-    public let queue: MTLCommandQueue?
-    public var isAvailable: Bool { device != nil && queue != nil }
+    public nonisolated let device: MTLDevice?
+    public nonisolated let queue: MTLCommandQueue?
+    public nonisolated var isAvailable: Bool { device != nil && queue != nil }
 
     private init() {
         let dev = MTLCreateSystemDefaultDevice()
@@ -37,7 +37,7 @@ public final class MetalCompute: @unchecked Sendable {
 
     /// Computes  S = X · Xᵀ / n  for X ∈ ℝ^{p×n} (row-major, double).
     /// Returns the p×p symmetric matrix row-major plus the device used.
-    public func gramMatrix(_ X: [Double], p: Int, n: Int) -> (S: [Double], device: ComputeDevice) {
+    public nonisolated func gramMatrix(_ X: [Double], p: Int, n: Int) -> (S: [Double], device: ComputeDevice) {
         EDLog.log(.gram, "gram entry — p=\(p) n=\(n) X.count=\(X.count) mps_available=\(isAvailable)")
         if X.count != p * n {
             EDLog.error(.gram, "matrix size mismatch — X.count=\(X.count) expected p*n=\(p * n)")
@@ -53,7 +53,7 @@ public final class MetalCompute: @unchecked Sendable {
 
     // MARK: - GPU path (MPS)
 
-    private func gramViaMPS(_ X: [Double], p: Int, n: Int) -> [Double]? {
+    private nonisolated func gramViaMPS(_ X: [Double], p: Int, n: Int) -> [Double]? {
         guard let device = device, let queue = queue else { return nil }
         // MPS-Matrix supports float32 (and float16); we downcast for the matmul,
         // then upcast on the way back. For the histogram-level use this is fine.
@@ -109,7 +109,7 @@ public final class MetalCompute: @unchecked Sendable {
 
     // MARK: - CPU path (Accelerate cblas_dgemm)
 
-    private func gramViaAccelerate(_ X: [Double], p: Int, n: Int) -> [Double] {
+    private nonisolated func gramViaAccelerate(_ X: [Double], p: Int, n: Int) -> [Double] {
         var S = [Double](repeating: 0, count: p * p)
         // C = (1/n) · A · Bᵀ  with A = B = X.
         cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,

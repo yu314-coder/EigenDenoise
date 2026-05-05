@@ -66,12 +66,16 @@ public enum NativeDenoise {
         }
     }
 
-    public static func run(_ job: Job) -> NativeDenoiseResult {
+    public nonisolated static func run(_ job: Job,
+                                         progress: (@Sendable (Double, String) -> Void)? = nil)
+        -> NativeDenoiseResult
+    {
         let t0 = Date()
         let H = job.H, W = job.W, p = H * W
         let nTrain = job.noisyTrain.count / p
         let n = nTrain + 1
         let y = Double(p) / Double(n)
+        progress?(0.05, "Preparing matrix")
         EDLog.log(.denoise, "native — H=\(H) W=\(W) p=\(p) n=\(n) method=\(job.method) T=\(job.applyT) resize=\(job.colorResize) center=\(job.center) device=\(job.device)")
 
         // Build column-major X (p × n) over Doubles. Last column = test.
@@ -89,8 +93,10 @@ public enum NativeDenoise {
         var psnrMP = Double.nan, rankMP = 0
         var mpImage = job.noisyTest
         if job.method == "both" || job.method == "mp" {
+            progress?(0.15, "Classical M-P · SVD")
             (rankMP, mpImage) = runClassicalMP(X: X, p: p, n: n, H: H, W: W)
             psnrMP = psnrDouble(clean: job.cleanTest, denoised: mpImage)
+            progress?(0.35, "Classical M-P · done (r̂=\(rankMP))")
         }
 
         // ---- Generalized Cov oracle (with toggles) -------------------------
@@ -100,6 +106,7 @@ public enum NativeDenoise {
         var eigs: [Double] = []
         var deviceLabel = "Accelerate (CPU)"
         if job.method == "both" || job.method == "gencov" {
+            progress?(0.40, "Gen-Cov · eigendecomposition")
             let g = runGenCovOracle(X: X, p: p, n: n, H: H, W: W,
                                      cleanTest: job.cleanTest,
                                      applyT: job.applyT,
@@ -112,6 +119,7 @@ public enum NativeDenoise {
             eigs = g.eigenvalues
             deviceLabel = g.device
             psnrGen = psnrDouble(clean: job.cleanTest, denoised: genImage)
+            progress?(0.95, "Gen-Cov · done (r̂=\(rankGen) â=\(String(format:"%.2f", aHat)) β̂=\(String(format:"%.2f", betaHat)))")
         }
 
         // Residual ×3
@@ -139,7 +147,7 @@ public enum NativeDenoise {
     // centring, eigenvalues are σ²/n from a raw SVD of X, spread rule.
     // ====================================================================
 
-    private static func runClassicalMP(X: [Double], p: Int, n: Int,
+    private nonisolated static func runClassicalMP(X: [Double], p: Int, n: Int,
                                         H: Int, W: Int) -> (Int, [Float]) {
         // X is column-major (p × n). SVD wants row-major (p × n) array.
         var Xrow = [Double](repeating: 0, count: p * n)
@@ -190,7 +198,7 @@ public enum NativeDenoise {
         let image: [Float]; let eigenvalues: [Double]; let device: String
     }
 
-    private static func runGenCovOracle(X: [Double], p: Int, n: Int,
+    private nonisolated static func runGenCovOracle(X: [Double], p: Int, n: Int,
                                           H: Int, W: Int,
                                           cleanTest: [Float],
                                           applyT: Bool, colorResize: Bool,
@@ -310,7 +318,7 @@ public enum NativeDenoise {
     // ====================================================================
     // Helper: top-60 eigenvalues of (1/n) X̃ X̃ᵀ (used when only MP runs).
     // ====================================================================
-    private static func topCenteredEigs(X: [Double], p: Int, n: Int) -> [Double] {
+    private nonisolated static func topCenteredEigs(X: [Double], p: Int, n: Int) -> [Double] {
         var xMean = [Double](repeating: 0, count: p)
         for i in 0..<p {
             var s = 0.0
@@ -329,7 +337,7 @@ public enum NativeDenoise {
     }
 
     // PSNR helper returning Double for the result struct.
-    private static func psnrDouble(clean: [Float], denoised: [Float]) -> Double {
+    private nonisolated static func psnrDouble(clean: [Float], denoised: [Float]) -> Double {
         Double(Metrics.psnr(clean: clean, denoised: denoised))
     }
 }

@@ -111,4 +111,31 @@ public enum SVDx {
         }
         return y
     }
+
+    /// Project a vector x ∈ ℝ^p onto the rank-r subspace spanned by U[:, :r],
+    /// applying a per-component shrinker t_j in eigen-coordinates:
+    ///     y = U_r · diag(t) · U_rᵀ · x
+    /// `t` must have length ≥ r.
+    public static func projectShrink(U: [Double], p: Int, k: Int,
+                                       rank r: Int, x: [Double],
+                                       t: [Double]) -> [Double] {
+        precondition(x.count == p)
+        precondition(t.count >= Swift.min(r, k))
+        guard r > 0 else { return [Double](repeating: 0.0, count: p) }
+        let r = Swift.min(r, k)
+        var c = [Double](repeating: 0.0, count: r)
+        for j in 0..<r {
+            var sum = 0.0
+            let base = j * p
+            for i in 0..<p { sum += U[base + i] * x[i] }
+            c[j] = sum * t[j]
+        }
+        var y = [Double](repeating: 0.0, count: p)
+        for j in 0..<r {
+            let cj = c[j]
+            let base = j * p
+            for i in 0..<p { y[i] += U[base + i] * cj }
+        }
+        return y
+    }
 }

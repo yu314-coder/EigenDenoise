@@ -236,14 +236,21 @@ public enum NativeDenoise {
         for i in 0..<p { xTestC[i] = Xc[i * n + (n - 1)] }
         let xMeanFlat = xMean
 
-        // Per-rank cached projection of the centred test column.
-        var projCache = [Int: [Double]]()
-        func proj(rank r: Int) -> [Double] {
-            if let c = projCache[r] { return c }
-            let dv = (r > 0 && r < m)
-                ? SVDx.project(U: U, p: p, k: m, rank: r, x: xTestC)
-                : [Double](repeating: 0, count: p)
-            projCache[r] = dv; return dv
+        // Eigen-space projection of the centred test column with the
+        // diagonal shrinker T(a, β): first ⌊r·β⌋ components scaled by √a,
+        // remaining components scaled by 1.  When `applyT` is off we fall
+        // back to a hard projection (t_j ≡ 1).
+        func projT(rank r: Int, a: Double, beta: Double) -> [Double] {
+            guard r > 0 && r <= m else { return [Double](repeating: 0, count: p) }
+            if applyT {
+                let kBeta = Int((Double(r) * min(max(beta, 0), 1)).rounded())
+                let mul = sqrt(max(a, 0))
+                var t = [Double](repeating: 1.0, count: r)
+                for i in 0..<min(kBeta, r) { t[i] = mul }
+                return SVDx.projectShrink(U: U, p: p, k: m, rank: r, x: xTestC, t: t)
+            } else {
+                return SVDx.project(U: U, p: p, k: m, rank: r, x: xTestC)
+            }
         }
 
         // Acceptance test.
@@ -263,15 +270,18 @@ public enum NativeDenoise {
             return (m, 0.0)
         }
 
-        // Build a reconstructed test image at given (a, β, rank).
+        // Build a reconstructed test image at given (a, β, rank). The T(a, β)
+        // shrinkage now lives inside `projT` (eigen-space), as required by the
+        // generalized-spiked-model estimator. The pixel-space `applyTDiag`
+        // post-step was a bug — it darkened raster-scan pixel ranges and had
+        // nothing to do with eigenvalue shrinkage.
         func reconstruct(rank r: Int, a: Double, beta: Double) -> [Float] {
-            let dv = proj(rank: r)
+            let dv = projT(rank: r, a: a, beta: beta)
             var img = [Float](repeating: 0, count: p)
             for i in 0..<p {
                 let v = Float(dv[i] + xMeanFlat[i])
                 img[i] = min(max(v, 0), 1)
             }
-            if applyT { applyTDiag(&img, a: Float(a), beta: Float(beta)) }
             if colorResize { applyColorResize(&img) }
             return img
         }

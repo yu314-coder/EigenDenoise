@@ -167,28 +167,44 @@ public enum Denoiser: Sendable {
 
         // Per-rank cached projection of the centred test column.
         var projCache = [Int: [Double]]()
-        func projCentered(rank r: Int) -> [Double] {
-            if let cached = projCache[r] { return cached }
-            let proj: [Double]
-            if r <= 0 || r >= m {
-                proj = [Double](repeating: 0, count: p)
+        // Eigen-space projection of a centred vector with the diagonal
+        // shrinker T(a, β): first ⌊r·β⌋ singular components scaled by √a,
+        // remaining components scaled by 1.  When `applyT` is off this is
+        // a hard projection (t_j ≡ 1) — we hit the per-rank cache then.
+        func projCentered(rank r: Int, a: Double, beta: Double, applyT: Bool,
+                          x: [Double]) -> [Double] {
+            guard r > 0 && r < m else { return [Double](repeating: 0, count: p) }
+            if applyT {
+                let kBeta = Int((Double(r) * min(max(beta, 0), 1)).rounded())
+                let mul = sqrt(max(a, 0))
+                var t = [Double](repeating: 1.0, count: r)
+                for i in 0..<min(kBeta, r) { t[i] = mul }
+                return SVDx.projectShrink(U: U, p: p, k: m, rank: r, x: x, t: t)
             } else {
-                proj = SVDx.project(U: U, p: p, k: m, rank: r, x: xTestC)
+                return SVDx.project(U: U, p: p, k: m, rank: r, x: x)
             }
+        }
+        // Hard-projection cache (only valid when applyT is off).
+        func projCenteredCachedHard(rank r: Int) -> [Double] {
+            if let cached = projCache[r] { return cached }
+            let proj: [Double] = (r <= 0 || r >= m)
+                ? [Double](repeating: 0, count: p)
+                : SVDx.project(U: U, p: p, k: m, rank: r, x: xTestC)
             projCache[r] = proj
             return proj
         }
 
         // Convert centred projection → uncentred reconstructed image with
-        // optional T(a, β) and color-resize.
+        // optional T(a, β) (eigen-space) and color-resize. The previous
+        // pixel-space `applyTDiag` post-step was a bug — it darkened a
+        // raster-scan pixel range instead of shrinking eigen-coordinates.
         func reconstruct(rank r: Int, a: Double, beta: Double,
                          applyT: Bool, colorResize: Bool) -> [Float] {
-            let proj = projCentered(rank: r)
+            let proj = applyT
+                ? projCentered(rank: r, a: a, beta: beta, applyT: true, x: xTestC)
+                : projCenteredCachedHard(rank: r)
             var img = [Float](repeating: 0, count: p)
-            for i in 0..<p { img[i] = Float(proj[i] + xMean[i]) }
-            // Clip
-            for i in 0..<p { img[i] = clamp01(img[i]) }
-            if applyT { applyTDiag(&img, a: Float(a), beta: Float(beta)) }
+            for i in 0..<p { img[i] = clamp01(Float(proj[i] + xMean[i])) }
             if colorResize { applyColorResize(&img) }
             return img
         }
@@ -272,12 +288,10 @@ public enum Denoiser: Sendable {
         for j in 0..<n {
             var col = [Double](repeating: 0, count: p)
             for i in 0..<p { col[i] = X[i * n + j] - xMean[i] }
-            let proj = rankHat > 0
-                ? SVDx.project(U: U, p: p, k: m, rank: rankHat, x: col)
-                : [Double](repeating: 0, count: p)
+            let proj = projCentered(rank: rankHat, a: aHat, beta: betaHat,
+                                    applyT: config.applyT, x: col)
             var img = [Float](repeating: 0, count: p)
             for i in 0..<p { img[i] = clamp01(Float(proj[i] + xMean[i])) }
-            if config.applyT { applyTDiag(&img, a: Float(aHat), beta: Float(betaHat)) }
             if config.colorResize { applyColorResize(&img) }
             for i in 0..<p { denoisedAll[j * p + i] = img[i] }
         }
@@ -313,18 +327,6 @@ public enum DenoiseError: LocalizedError {
 
 
 // MARK: - Post-processing helpers
-
-/// Diagonal T whose first ⌊p · β⌋ entries are √a, rest are 1, then clip to [0, 1].
-func applyTDiag(_ img: inout [Float], a: Float, beta: Float) {
-    let p = img.count
-    let beta = min(max(beta, 0), 1)
-    let a = max(a, 0)
-    let k = Int((Double(p) * Double(beta)).rounded())
-    if k > 0 {
-        let mul = sqrt(a)
-        for i in 0..<min(k, p) { img[i] = clamp01(img[i] * mul) }
-    }
-}
 
 /// y = (x − min(x)) / max(x_before_subtract), clipped to [0, 1].
 func applyColorResize(_ img: inout [Float]) {

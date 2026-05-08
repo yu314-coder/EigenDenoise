@@ -53,6 +53,45 @@ public enum SymEigen {
         }
         return w
     }
+
+    /// Full eigendecomposition of an n×n symmetric matrix supplied row-major.
+    /// Returns ascending eigenvalues `w` (length n) and column-major
+    /// eigenvectors `V` (length n*n) such that A = V · diag(w) · Vᵀ.
+    public nonisolated static func eigh(_ A: [Double], n: Int) -> (w: [Double], V: [Double]) {
+        precondition(A.count == n * n)
+        var Acopy = A   // dsyevd will overwrite with eigenvectors (column-major).
+        var jobz: Int8 = 0x56         // 'V' — values + vectors
+        var uplo: Int8 = 0x55         // 'U'
+        var nl = __CLPK_integer(n)
+        var lda = __CLPK_integer(n)
+        var w = [Double](repeating: 0.0, count: n)
+        var info: __CLPK_integer = 0
+        var workQ: Double = 0
+        var lwork: __CLPK_integer = -1
+        var iworkQ: __CLPK_integer = 0
+        var liwork: __CLPK_integer = -1
+        Acopy.withUnsafeMutableBufferPointer { ap in
+            w.withUnsafeMutableBufferPointer { wp in
+                _ = dsyevd_(&jobz, &uplo, &nl, ap.baseAddress, &lda, wp.baseAddress,
+                             &workQ, &lwork, &iworkQ, &liwork, &info)
+            }
+        }
+        lwork = __CLPK_integer(workQ)
+        liwork = iworkQ > 0 ? iworkQ : __CLPK_integer(1)
+        var work = [Double](repeating: 0.0, count: Int(lwork))
+        var iwork = [__CLPK_integer](repeating: 0, count: Int(liwork))
+        Acopy.withUnsafeMutableBufferPointer { ap in
+            w.withUnsafeMutableBufferPointer { wp in
+                work.withUnsafeMutableBufferPointer { wkp in
+                    iwork.withUnsafeMutableBufferPointer { iwkp in
+                        _ = dsyevd_(&jobz, &uplo, &nl, ap.baseAddress, &lda, wp.baseAddress,
+                                     wkp.baseAddress, &lwork, iwkp.baseAddress, &liwork, &info)
+                    }
+                }
+            }
+        }
+        return (w, Acopy)
+    }
 }
 
 

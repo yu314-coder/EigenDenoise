@@ -107,6 +107,98 @@ public final class MetalCompute: @unchecked Sendable {
         return S
     }
 
+    /// Compute Xᵀ X for X ∈ ℝ^{p×n} (row-major, double) on the GPU.
+    /// Returns the n×n result row-major plus the device used. No scaling.
+    public nonisolated func gramSmall(_ X: [Double], p: Int, n: Int) -> (S: [Double], device: ComputeDevice)? {
+        precondition(X.count == p * n)
+        guard isAvailable, let device = device, let queue = queue else { return nil }
+        var Xf = [Float](repeating: 0, count: p * n)
+        for i in 0..<(p * n) { Xf[i] = Float(X[i]) }
+        let bytesA = p * n * MemoryLayout<Float>.size
+        let bytesC = n * n * MemoryLayout<Float>.size
+        guard let bufA = device.makeBuffer(bytes: Xf, length: bytesA, options: .storageModeShared),
+              let bufC = device.makeBuffer(length: bytesC, options: .storageModeShared)
+        else { return nil }
+        let descA = MPSMatrixDescriptor(rows: p, columns: n,
+                                          rowBytes: n * MemoryLayout<Float>.size,
+                                          dataType: .float32)
+        let descC = MPSMatrixDescriptor(rows: n, columns: n,
+                                          rowBytes: n * MemoryLayout<Float>.size,
+                                          dataType: .float32)
+        let A = MPSMatrix(buffer: bufA, descriptor: descA)
+        let C = MPSMatrix(buffer: bufC, descriptor: descC)
+        let mm = MPSMatrixMultiplication(device: device,
+                                          transposeLeft: true,
+                                          transposeRight: false,
+                                          resultRows: n, resultColumns: n,
+                                          interiorColumns: p,
+                                          alpha: 1.0, beta: 0.0)
+        guard let cmd = queue.makeCommandBuffer() else { return nil }
+        mm.encode(commandBuffer: cmd, leftMatrix: A, rightMatrix: A, resultMatrix: C)
+        cmd.commit(); cmd.waitUntilCompleted()
+        if cmd.status != .completed { return nil }
+        var S = [Double](repeating: 0, count: n * n)
+        let outPtr = bufC.contents().bindMemory(to: Float.self, capacity: n * n)
+        for i in 0..<n {
+            for j in 0..<n { S[i * n + j] = Double(outPtr[i * n + j]) }
+        }
+        // Symmetrise round-off asymmetry.
+        for i in 0..<n {
+            for j in (i + 1)..<n {
+                let m = 0.5 * (S[i * n + j] + S[j * n + i])
+                S[i * n + j] = m; S[j * n + i] = m
+            }
+        }
+        return (S, .mps)
+    }
+
+    /// Generic GPU matmul: returns A · B (row-major, double) where A is
+    /// `aRows × aCols` row-major and B is `bRows × bCols` row-major. Returns
+    /// nil when MPS is unavailable or the command buffer doesn't complete.
+    public nonisolated func matmul(_ A: [Double], aRows: Int, aCols: Int,
+                                     _ B: [Double], bRows: Int, bCols: Int) -> [Double]? {
+        precondition(A.count == aRows * aCols)
+        precondition(B.count == bRows * bCols)
+        precondition(aCols == bRows)
+        guard isAvailable, let device = device, let queue = queue else { return nil }
+        var Af = [Float](repeating: 0, count: A.count)
+        var Bf = [Float](repeating: 0, count: B.count)
+        for i in 0..<A.count { Af[i] = Float(A[i]) }
+        for i in 0..<B.count { Bf[i] = Float(B[i]) }
+        let bytesA = A.count * MemoryLayout<Float>.size
+        let bytesB = B.count * MemoryLayout<Float>.size
+        let bytesC = aRows * bCols * MemoryLayout<Float>.size
+        guard let bufA = device.makeBuffer(bytes: Af, length: bytesA, options: .storageModeShared),
+              let bufB = device.makeBuffer(bytes: Bf, length: bytesB, options: .storageModeShared),
+              let bufC = device.makeBuffer(length: bytesC, options: .storageModeShared)
+        else { return nil }
+        let descA = MPSMatrixDescriptor(rows: aRows, columns: aCols,
+                                          rowBytes: aCols * MemoryLayout<Float>.size,
+                                          dataType: .float32)
+        let descB = MPSMatrixDescriptor(rows: bRows, columns: bCols,
+                                          rowBytes: bCols * MemoryLayout<Float>.size,
+                                          dataType: .float32)
+        let descC = MPSMatrixDescriptor(rows: aRows, columns: bCols,
+                                          rowBytes: bCols * MemoryLayout<Float>.size,
+                                          dataType: .float32)
+        let mA = MPSMatrix(buffer: bufA, descriptor: descA)
+        let mB = MPSMatrix(buffer: bufB, descriptor: descB)
+        let mC = MPSMatrix(buffer: bufC, descriptor: descC)
+        let mm = MPSMatrixMultiplication(device: device,
+                                          transposeLeft: false, transposeRight: false,
+                                          resultRows: aRows, resultColumns: bCols,
+                                          interiorColumns: aCols,
+                                          alpha: 1.0, beta: 0.0)
+        guard let cmd = queue.makeCommandBuffer() else { return nil }
+        mm.encode(commandBuffer: cmd, leftMatrix: mA, rightMatrix: mB, resultMatrix: mC)
+        cmd.commit(); cmd.waitUntilCompleted()
+        if cmd.status != .completed { return nil }
+        var C = [Double](repeating: 0, count: aRows * bCols)
+        let outPtr = bufC.contents().bindMemory(to: Float.self, capacity: aRows * bCols)
+        for i in 0..<(aRows * bCols) { C[i] = Double(outPtr[i]) }
+        return C
+    }
+
     // MARK: - CPU path (Accelerate cblas_dgemm)
 
     private nonisolated func gramViaAccelerate(_ X: [Double], p: Int, n: Int) -> [Double] {

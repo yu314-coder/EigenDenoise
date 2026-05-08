@@ -89,12 +89,27 @@ public enum NativeDenoise {
             X[i * n + (n - 1)] = Double(job.noisyTest[i])
         }
 
+        // Resolve device preference once. MPS is feasible only when p ≥ n
+        // (we use the n×n Gram trick); otherwise fall through to CPU SVD.
+        let mpsAvailable = MetalCompute.shared.isAvailable && p >= n
+        let useGPU: Bool = {
+            switch job.device {
+            case "mps":  return mpsAvailable
+            case "cpu":  return false
+            case "auto": return mpsAvailable
+            default:     return mpsAvailable
+            }
+        }()
+        var deviceLabel = "Accelerate (CPU)"
+
         // ---- Classical M-P (no centring, spread rule) ----------------------
         var psnrMP = Double.nan, rankMP = 0
         var mpImage = job.noisyTest
         if job.method == "both" || job.method == "mp" {
-            progress?(0.15, "Classical M-P · SVD")
-            (rankMP, mpImage) = runClassicalMP(X: X, p: p, n: n, H: H, W: W)
+            progress?(0.15, "Classical M-P · SVD" + (useGPU ? " (GPU)" : ""))
+            let (rk, img, dev) = runClassicalMP(X: X, p: p, n: n, H: H, W: W,
+                                                 useGPU: useGPU)
+            rankMP = rk; mpImage = img; deviceLabel = dev
             psnrMP = psnrDouble(clean: job.cleanTest, denoised: mpImage)
             progress?(0.35, "Classical M-P · done (r̂=\(rankMP))")
         }
@@ -104,15 +119,15 @@ public enum NativeDenoise {
         var aHat = 1.0, betaHat = 0.0, sigma2Hat = 0.0
         var genImage = job.noisyTest
         var eigs: [Double] = []
-        var deviceLabel = "Accelerate (CPU)"
         if job.method == "both" || job.method == "gencov" {
-            progress?(0.40, "Gen-Cov · eigendecomposition")
+            progress?(0.40, "Gen-Cov · eigendecomposition" + (useGPU ? " (GPU)" : ""))
             let g = runGenCovOracle(X: X, p: p, n: n, H: H, W: W,
                                      cleanTest: job.cleanTest,
                                      applyT: job.applyT,
                                      colorResize: job.colorResize,
                                      center: job.center,
-                                     deSeed: job.deSeed)
+                                     deSeed: job.deSeed,
+                                     useGPU: useGPU)
             rankGen = g.rank
             aHat = g.a; betaHat = g.beta; sigma2Hat = g.sigma2
             genImage = g.image
@@ -148,7 +163,8 @@ public enum NativeDenoise {
     // ====================================================================
 
     private nonisolated static func runClassicalMP(X: [Double], p: Int, n: Int,
-                                        H: Int, W: Int) -> (Int, [Float]) {
+                                        H: Int, W: Int,
+                                        useGPU: Bool) -> (Int, [Float], String) {
         // X is column-major (p × n). SVD wants row-major (p × n) array.
         var Xrow = [Double](repeating: 0, count: p * n)
         for i in 0..<p {
@@ -156,7 +172,14 @@ public enum NativeDenoise {
                 Xrow[i * n + j] = X[i * n + j]
             }
         }
-        let svd = SVDx.svd(Xrow, p: p, n: n)
+        var device = "Accelerate (CPU)"
+        let svd: SVDx.Result = {
+            if useGPU, let g = SVDx.svdGramGPU(Xrow, p: p, n: n) {
+                device = "Metal (GPU)"
+                return g
+            }
+            return SVDx.svd(Xrow, p: p, n: n)
+        }()
         let m = svd.k
         var eigs = [Double](repeating: 0, count: m)
         for i in 0..<m { eigs[i] = (svd.s[i] * svd.s[i]) / Double(n) }
@@ -186,7 +209,7 @@ public enum NativeDenoise {
             : [Double](repeating: 0, count: p)
         var img = [Float](repeating: 0, count: p)
         for i in 0..<p { img[i] = Float(min(max(dv[i], 0), 1)) }
-        return (rank, img)
+        return (rank, img, device)
     }
 
     // ====================================================================
@@ -203,7 +226,8 @@ public enum NativeDenoise {
                                           cleanTest: [Float],
                                           applyT: Bool, colorResize: Bool,
                                           center: Bool,
-                                          deSeed: UInt64) -> GenResult {
+                                          deSeed: UInt64,
+                                          useGPU: Bool) -> GenResult {
         // Centring (toggle).
         var xMean = [Double](repeating: 0, count: p)
         if center {
@@ -219,8 +243,15 @@ public enum NativeDenoise {
             for j in 0..<n { Xc[i * n + j] = X[i * n + j] - mu }
         }
 
-        // SVD via Accelerate (we still get eigenvalues for the chart).
-        let svd = SVDx.svd(Xc, p: p, n: n)
+        // SVD: GPU (Metal MPS gram-trick) when requested + feasible, else CPU.
+        var deviceUsed = "Accelerate (CPU)"
+        let svd: SVDx.Result = {
+            if useGPU, let g = SVDx.svdGramGPU(Xc, p: p, n: n) {
+                deviceUsed = "Metal (GPU)"
+                return g
+            }
+            return SVDx.svd(Xc, p: p, n: n)
+        }()
         let U = svd.U
         let m = svd.k
         var lam = [Double](repeating: 0, count: m)
@@ -322,7 +353,7 @@ public enum NativeDenoise {
         return GenResult(rank: rank, a: aHat, beta: betaHat,
                           sigma2: sigma2, image: img,
                           eigenvalues: topEigs,
-                          device: "Accelerate (CPU)")
+                          device: deviceUsed)
     }
 
     // ====================================================================

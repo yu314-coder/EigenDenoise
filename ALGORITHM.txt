@@ -1,0 +1,221 @@
+================================================================================
+EigenDenoise — Generalized-Covariance RMT Denoising Algorithm
+================================================================================
+
+This document describes the exact algorithm executed by the "Gen-Cov" tile of
+the Image Processing tab, which is the EigenDenoise port of the rmt-denoise
+PyPI library. It corresponds to `runGenCovOracle` in
+EigenDenoise/Denoise/NativeDenoise.swift.
+
+The method assumes the noisy stack follows a generalized spiked covariance
+model with two-point population law
+
+        H  =  β · δ_a  +  (1 − β) · δ_1                          (1)
+
+i.e. a fraction β of the population covariance eigenvalues equal `a` (the
+signal-spike level, 0 < a ≤ 1) and the rest equal 1 (pure noise).
+The denoiser estimates (a, β), uses the corresponding generalized
+Marchenko–Pastur bulk to threshold the sample-spectrum, and then applies the
+oracle eigen-coordinate shrinker T(a, β).
+
+--------------------------------------------------------------------------------
+0.  Notation and inputs
+--------------------------------------------------------------------------------
+
+  H, W            patch height / width (integers, e.g. 64×64)
+  p   = H · W     ambient pixel dimension of one image flattened (column).
+  n_train         number of noisy training images.
+  n   = n_train+1 column count of the data matrix; the last column is the
+                  noisy test image, which the denoiser reconstructs.
+  X ∈ ℝ^{p × n}   data matrix with one (flattened) noisy image per column.
+  y_test_clean    optional clean reference; only used by the oracle search to
+                  evaluate PSNR.
+
+The "oracle" qualifier means (a, β) are tuned to maximize PSNR against the
+clean reference; in production you would fix (a, β) once per dataset.
+
+--------------------------------------------------------------------------------
+1.  Centering
+--------------------------------------------------------------------------------
+
+If the `center` toggle is on (default):
+
+        x̄_i  =  (1/n) Σ_j X_{i,j}                                (2)
+        X̃   =  X − x̄ · 1ᵀ                                       (3)
+
+otherwise X̃ := X. The mean x̄ is added back at the end (step 6).
+
+--------------------------------------------------------------------------------
+2.  SVD / eigendecomposition of the sample covariance
+--------------------------------------------------------------------------------
+
+Compute a thin SVD
+
+        X̃   =  U · diag(σ) · Vᵀ,         σ_1 ≥ … ≥ σ_m ≥ 0,     (4)
+
+with m = min(p, n). The implementation uses two paths and picks one based on
+the device toggle and feasibility (p ≥ n required for the GPU path):
+
+  CPU path:  LAPACK dgesdd via Accelerate (`SVDx.svd`).
+
+  GPU path:  n × n Gram trick (`SVDx.svdGramGPU`).
+             a) G = X̃ᵀ X̃   (n × n)   on Metal via MPSMatrixMultiplication
+             b) G = V · diag(μ) · Vᵀ   on CPU via dsyevd (n is small)
+             c) σ_j = √(μ_j · 1)        ordered descending
+             d) U   = X̃ · V · diag(1/σ)   on Metal via MPSMatrixMultiplication
+
+The sample-covariance eigenvalues are
+
+        λ_j  =  σ_j² / n,             j = 1, …, m.                (5)
+
+These λ_j are also the values plotted in the spectrum chart.
+
+--------------------------------------------------------------------------------
+3.  Generalized Marchenko–Pastur bulk
+--------------------------------------------------------------------------------
+
+For a candidate noise rank L (= m − k pure-noise components) define the local
+aspect ratio
+
+        γ_k  =  L / n.                                            (6)
+
+The limiting noise spectrum under (1) is supported on the bulk [g_−, g_+],
+where g_± are critical points of the Stieltjes-transform companion function
+
+        g(t; a, β, y) = −1/t + y · [ β · a / (1 + a · t)
+                                       + (1 − β) / (1 + t) ]      (7)
+
+  g_−(a, β, γ_k) = max_{t > 0}  g(t)
+  g_+(a, β, γ_k) = min over t in I⁺(a)
+                       I⁺(a) = (−1/a, 0)   if a ≥ 1
+                              (−1, 0)      if a < 1
+
+Both extrema are computed with Brent's bounded scalar minimizer
+(`RMT.bulkEdges`). When |a − 1| < 10⁻⁹ or β ∈ {0, 1} the bulk degenerates to
+the classical MP edges (1 ± √y)².
+
+The bulk width is
+
+        W_k  =  g_+ − g_−.                                        (8)
+
+--------------------------------------------------------------------------------
+4.  Spread-rule rank selection
+--------------------------------------------------------------------------------
+
+Given (a, β), find the smallest k* ∈ {0, 1, …, m−1} such that the empirical
+tail spectrum is consistent with a pure-noise bulk of width W_k. For each
+candidate k let
+
+        L      = m − k                       (= candidates pure-noise count)
+        γ_k    = L / n
+        W_k    = g_+(a, β, γ_k) − g_−(a, β, γ_k)
+        λ_top  = λ_{k+1}                      (largest "noise" eigenvalue)
+        λ_end  = λ_m                          (smallest sample eigenvalue)
+        σ²(k)  = (λ_top − λ_end) / W_k        (implied noise variance)
+        S_k    = Σ_{j > k} λ_j                (tail energy)
+
+Accept the smallest k with
+
+        S_k  ≥  L · σ²(k).                                         (9)
+
+The denoising rank is r* := k*. (`rankSigma2` in the source.)
+
+This is the "spread" / "energy" criterion of Marchenko–Pastur thresholding,
+generalized to arbitrary (a, β) via the bulk width W_k.
+
+--------------------------------------------------------------------------------
+5.  Eigen-coordinate shrinker T(a, β)
+--------------------------------------------------------------------------------
+
+Given the rank r*, build the diagonal shrinker T(a, β) that the generalized
+spiked-model estimator prescribes:
+
+        t_j  =  √a    for j = 1, …, ⌊r* · β⌋
+        t_j  =  1     for j = ⌊r* · β⌋ + 1, …, r*.                (10)
+
+This is the diagonal of the population square-root T = H^{1/2} expressed in
+the order matching the descending sample eigenvectors. The first ⌊r·β⌋
+components correspond to the spike sub-population (variance a); the rest are
+treated as pure-noise unit-variance directions.
+
+When the `applyT` toggle is off the shrinker degenerates to t_j ≡ 1 and the
+reconstruction reduces to a hard projection onto U[:, :r*].
+
+CRITICAL — This T MUST be applied in eigen-coordinates, not pixel-space. The
+1.0 release applied a √a-mask to the first ⌊p·β⌋ raster-scan PIXELS of the
+already-reconstructed image, which simply darkened the top portion of the
+output and had nothing to do with eigenvalue shrinkage. 1.1 fixes this.
+
+--------------------------------------------------------------------------------
+6.  Reconstruction of the test image
+--------------------------------------------------------------------------------
+
+Let x̃_test = (X̃)_{:,n}  (centred test column). The eigen-space shrunken
+reconstruction is
+
+        ĉ_j   =  t_j · ⟨ U[:,j], x̃_test ⟩       j = 1, …, r*
+        ŷ_p  =  Σ_{j=1}^{r*}  ĉ_j · U[:,j]
+        ŷ    =  ŷ_p  +  x̄                       (re-add mean)
+        ŷ    =  clip(ŷ, 0, 1)
+
+(in code: `SVDx.projectShrink(U, p, k=m, rank=r*, x=x̃_test, t=t)`).
+
+If the `colorResize` toggle is on, finally rescale to fill [0, 1]:
+
+        ŷ  ←  clip( (ŷ − min ŷ) / max(ŷ_before_subtract), 0, 1 ).
+
+--------------------------------------------------------------------------------
+7.  Oracle search over (a, β)
+--------------------------------------------------------------------------------
+
+The pair (a, β) is found by maximizing PSNR(ŷ, y_test_clean) using SciPy-
+style differential evolution over
+
+        log a  ∈  [log 0.01, log 1.0]      ⇒  a ∈ [0.01, 1.0]
+        β      ∈  [0.01, 0.99]
+
+with `popsize = 20`, `maxIter = 80`, F = 0.7, CR = 0.7, tol = 10⁻⁴, and a
+deterministic seed (`deSeed`). Every candidate (a, β):
+
+  1. Computes (r*, σ²(k*)) via the spread rule of step 4.
+  2. Reconstructs ŷ via steps 5–6.
+  3. Records the PSNR; tracks the best seen.
+
+The best (â, β̂, r̂, σ̂²) is then used for the final reconstruction.
+
+--------------------------------------------------------------------------------
+8.  Outputs surfaced to the UI
+--------------------------------------------------------------------------------
+
+  genImage      ŷ                       — Gen-Cov denoised image tile
+  rankGen       r̂                       — kept rank
+  a, beta       (â, β̂)                  — oracle bulk parameters
+  sigma2        σ̂²(k̂*)                 — implied noise variance
+  psnrGen       PSNR(ŷ, y_test_clean)
+  eigenvalues   {λ_1, …, λ_min(60,m)}   — top sample eigenvalues for chart
+  device        "Metal (GPU)" / "Accelerate (CPU)"   — actual SVD path
+  residual      3 · |y_test_clean − ŷ|, clipped to [0, 1]
+
+Tapping the Gen-Cov tile in the UI also highlights the kept range
+[1, r̂] / [g_−(â, β̂, n/p), g_+(â, β̂, n/p)] in the spectrum chart.
+
+--------------------------------------------------------------------------------
+9.  Differences from Classical M-P (the second tile)
+--------------------------------------------------------------------------------
+
+Classical M-P fixes (a, β) ≡ (1, 0), uses the classical MP bulk width
+W = 4 √y, never centres, and reconstructs by hard projection (t_j ≡ 1). It is
+implemented as `runClassicalMP` in the same file. Gen-Cov reduces to it when
+the oracle search converges to (a, β) ≈ (1, 0) and `applyT` is off.
+
+================================================================================
+References
+================================================================================
+
+  • EigenDenoise/Denoise/NativeDenoise.swift   (runGenCovOracle)
+  • EigenDenoise/Math/RMT.swift                (bulkEdges, gFunction)
+  • EigenDenoise/Math/SVDx.swift               (svd, svdGramGPU, projectShrink)
+  • EigenDenoise/Math/Eigh.swift               (SymEigen.eigh)
+  • EigenDenoise/Math/MetalCompute.swift       (gramSmall, matmul)
+  • Yu, Y.-H. — Yau Science Award research paper (linked from the in-app
+    Help menu and from the Eigenvalue Distribution / Image Processing tabs).

@@ -64,9 +64,9 @@ struct MainTabView: View {
                         }
                     }
                     .transition(.opacity.combined(with: .move(edge: .top)))
-                    .padding(24)
-                    .frame(maxWidth: 1300, alignment: .topLeading)
-                    .frame(maxWidth: .infinity, alignment: .top)
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
                 .onChange(of: selection) { _, t in
                     EDLog.log(.ui, "tab changed → \(t.label)")

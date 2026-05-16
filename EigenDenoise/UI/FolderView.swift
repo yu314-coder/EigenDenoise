@@ -78,53 +78,67 @@ struct FolderView: View {
         managedDatasets = model.listManagedDatasets()
     }
 
-    // MARK: - Slim status strip
+    // MARK: - Storage strip (the single source of truth for Storage)
 
     private var statusStrip: some View {
         let hasFolder = model.folderURL != nil
+        let activeName = model.folderURL?.lastPathComponent
         return HStack(spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(LinearGradient(colors: [Palette.accent, Palette.accent2],
                                           startPoint: .topLeading, endPoint: .bottomTrailing))
-                Image(systemName: hasFolder ? "checkmark.circle.fill" : "photo.stack")
+                Image(systemName: "externaldrive.fill")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
             }
             .frame(width: 32, height: 32)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(hasFolder ? (model.folderURL?.lastPathComponent ?? "—") : "No folder loaded")
-                    .font(.callout.bold())
+                HStack(spacing: 6) {
+                    Text("STORAGE")
+                        .font(.system(size: 9, weight: .heavy))
+                        .foregroundStyle(Palette.muted)
+                    if hasFolder {
+                        Text("·").font(.system(size: 9)).foregroundStyle(Palette.muted)
+                        Text("ACTIVE: \(activeName ?? "")")
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundStyle(Palette.accent)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                Text(model.storageURL.path)
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(Palette.text)
                     .lineLimit(1).truncationMode(.middle)
-                Text(hasFolder
-                    ? (model.folderURL?.deletingLastPathComponent().path ?? "")
-                    : "Pick a folder or download a curated dataset to begin.")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Palette.muted)
-                    .lineLimit(1).truncationMode(.middle)
+                    .textSelection(.enabled)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            statusPill(systemImage: "photo.stack", value: "\(model.imageCount)", label: "imgs", tint: Palette.accent)
-            statusPill(systemImage: "ruler",
-                       value: model.imageCount == 0 ? "—" : "\(model.imageH)×\(model.imageW)",
-                       label: "size", tint: .indigo)
-            statusPill(systemImage: "books.vertical",
-                       value: "\(model.folderSubfolders.count)",
-                       label: "subs", tint: .orange)
+            statusPill(systemImage: "photo.stack",  value: "\(model.imageCount)", label: "imgs", tint: Palette.accent)
+            statusPill(systemImage: "books.vertical", value: "\(managedDatasets.count)", label: "sets", tint: .indigo)
+            statusPill(systemImage: "internaldrive",
+                       value: ByteCountFormatter.string(fromByteCount: totalBytesAcrossLibrary, countStyle: .file),
+                       label: "size", tint: .orange)
 
-            Button {
-                model.importFolderCopy()
-                refreshLibrary()
-            } label: {
-                Label("Import folder…", systemImage: "folder.badge.plus")
-                    .font(.caption.bold())
+            HStack(spacing: 4) {
+                Button { model.pickStorageLocation(); refreshLibrary() } label: {
+                    Label("Change…", systemImage: "folder.badge.gearshape")
+                        .font(.caption.bold())
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+                .help("Pick a different folder where downloads, imports, and managed datasets live.")
+                Button { model.resetStorageToDefault(); refreshLibrary() } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .help("Reset Storage to the default Application Support folder.")
+                Button { model.revealInFinder(model.storageURL) } label: {
+                    Image(systemName: "macwindow")
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .help("Reveal Storage in Finder")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .help("Pick a folder of images. EigenDenoise copies it into Storage and loads it.")
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .background(
@@ -160,42 +174,11 @@ struct FolderView: View {
         Card(title: "Add data",
               systemImage: "tray.and.arrow.down.fill",
               trailing: AnyView(
-                Pill(text: "Local copy", color: .teal, systemImage: "lock.shield")
+                Pill(text: "→ Storage", color: .teal, systemImage: "arrow.up.forward.app")
               )
         ) {
-            // Storage location row.
-            HStack(spacing: 8) {
-                Image(systemName: "externaldrive.fill").foregroundStyle(Palette.accent)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("STORAGE")
-                        .font(.system(size: 9, weight: .heavy))
-                        .foregroundStyle(Palette.muted)
-                    Text(model.storageURL.path)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Palette.text)
-                        .lineLimit(1).truncationMode(.middle)
-                        .textSelection(.enabled)
-                }
-                Spacer(minLength: 6)
-                Button { model.pickStorageLocation() } label: { Image(systemName: "folder.badge.gearshape") }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .help("Change storage location")
-                Button { model.resetStorageToDefault() } label: { Image(systemName: "arrow.counterclockwise") }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .help("Reset to default")
-                Button { model.revealInFinder(model.storageURL) } label: { Image(systemName: "macwindow") }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .help("Reveal Storage in Finder")
-            }
-            .padding(8)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.cornerMd, style: .continuous)
-                    .fill(Color(white: 0.97))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.cornerMd, style: .continuous)
-                    .stroke(Palette.border, lineWidth: 0.5)
-            )
+            Text("Files land in your Storage path (shown in the bar above) under a uniquely-named sub-folder. Imports work even on external drives — files are copied locally.")
+                .font(.caption2).foregroundStyle(Palette.muted)
 
             // Import tiles.
             HStack(spacing: 8) {

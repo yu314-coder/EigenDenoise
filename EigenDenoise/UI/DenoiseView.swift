@@ -191,10 +191,11 @@ struct DenoiseView: View {
         return Card(title: "Folder", systemImage: "folder.fill",
                      trailing: AnyView(
                         Button {
-                            model.pickFolder()
-                        } label: { Label("Browse…", systemImage: "tray.and.arrow.down") }
+                            model.importFolderCopy()
+                        } label: { Label("Import folder…", systemImage: "folder.badge.plus") }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                        .help("Pick a folder of images. It is copied into Storage so it works under the App Store sandbox.")
                      )
         ) {
             if let url = model.folderURL {

@@ -116,13 +116,15 @@ struct FolderView: View {
                        label: "subs", tint: .orange)
 
             Button {
-                model.pickFolder()
+                model.importFolderCopy()
+                refreshLibrary()
             } label: {
-                Label("Change folder…", systemImage: "folder.badge.gearshape")
+                Label("Import folder…", systemImage: "folder.badge.plus")
                     .font(.caption.bold())
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
+            .help("Pick a folder of images. EigenDenoise copies it into Storage and loads it.")
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .background(

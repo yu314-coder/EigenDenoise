@@ -395,11 +395,27 @@ final class AppModel {
         let dest = uniqueSubfolder(named: baseName)
         try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
         var copied = 0
+        var usedNames = Set<String>()
         if let it = fm.enumerator(at: src, includingPropertiesForKeys: [.isRegularFileKey]) {
             for case let f as URL in it {
                 let ext = f.pathExtension.lowercased()
                 guard ImageIO.imageExtensions.contains(ext) else { continue }
-                let target = dest.appendingPathComponent(f.lastPathComponent)
+                // Collision-safe flat copy: prefix name with parent folder
+                // path-components when the same filename already exists.
+                var name = f.lastPathComponent
+                if usedNames.contains(name) {
+                    let stem = (name as NSString).deletingPathExtension
+                    let parent = f.deletingLastPathComponent().lastPathComponent
+                    var candidate = "\(parent)_\(name)"
+                    var k = 2
+                    while usedNames.contains(candidate) {
+                        candidate = "\(parent)_\(stem)-\(k).\(ext)"
+                        k += 1
+                    }
+                    name = candidate
+                }
+                usedNames.insert(name)
+                let target = dest.appendingPathComponent(name)
                 do {
                     if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
                     try fm.copyItem(at: f, to: target)

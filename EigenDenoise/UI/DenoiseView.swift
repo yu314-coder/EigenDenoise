@@ -13,6 +13,10 @@ import SwiftUI
 struct DenoiseView: View {
     @Environment(AppModel.self) private var model
 
+    // Pagination state for the thumbnail grid.
+    @State private var thumbPage: Int = 0
+    private let thumbsPerPage: Int = 48
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             EmptyView().onAppear {
@@ -265,36 +269,111 @@ struct DenoiseView: View {
         }
     }
 
+    private var totalPages: Int {
+        max(1, Int(ceil(Double(model.imageNames.count) / Double(thumbsPerPage))))
+    }
+    private var clampedPage: Int { min(max(0, thumbPage), totalPages - 1) }
+    private var pageRange: Range<Int> {
+        let start = clampedPage * thumbsPerPage
+        let end   = min(model.imageNames.count, start + thumbsPerPage)
+        return start..<end
+    }
+
+    @ViewBuilder
     private var miniGrid: some View {
-        let names = Array(model.imageNames.prefix(36))
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 56), spacing: 4)],
-                         spacing: 4) {
-            ForEach(names, id: \.self) { name in
-                let p = model.imageH * model.imageW
-                let idx = model.imageNames.firstIndex(of: name) ?? 0
-                let slice: [Float] = idx * p + p <= model.imageData.count
-                    ? Array(model.imageData[(idx * p) ..< ((idx + 1) * p)]) : []
-                let isSel = model.testFilename == name
-                ZStack {
-                    if !slice.isEmpty,
-                       let img = ImageIO.nsImage(slice, H: model.imageH, W: model.imageW) {
-                        Image(nsImage: img)
-                            .resizable()
-                            .interpolation(.high)
-                            .aspectRatio(1, contentMode: .fit)
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    } else {
-                        Color(white: 0.94).clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        let total = model.imageNames.count
+        let range = pageRange
+        let names = Array(model.imageNames[range])
+        let p = model.imageH * model.imageW
+
+        VStack(alignment: .leading, spacing: 6) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 56), spacing: 4)],
+                       spacing: 4) {
+                ForEach(Array(names.enumerated()), id: \.element) { (offset, name) in
+                    let idx = range.lowerBound + offset
+                    let slice: [Float] = idx * p + p <= model.imageData.count
+                        ? Array(model.imageData[(idx * p) ..< ((idx + 1) * p)]) : []
+                    let isSel = model.testFilename == name
+                    ZStack {
+                        if !slice.isEmpty,
+                           let img = ImageIO.nsImage(slice, H: model.imageH, W: model.imageW) {
+                            Image(nsImage: img)
+                                .resizable()
+                                .interpolation(.high)
+                                .aspectRatio(1, contentMode: .fit)
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        } else {
+                            Color(white: 0.94).clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        }
                     }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(isSel ? Palette.accent : Palette.border,
+                                    lineWidth: isSel ? 2.0 : 0.5)
+                    )
+                    .help(name)
+                    .onTapGesture { model.testFilename = name }
                 }
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(isSel ? Palette.accent : Palette.border,
-                                lineWidth: isSel ? 2.0 : 0.5)
-                )
-                .onTapGesture { model.testFilename = name }
+            }
+            if total > thumbsPerPage {
+                paginationBar(total: total)
             }
         }
+        .onChange(of: total) { _, _ in
+            // New folder loaded → reset to page 0.
+            thumbPage = 0
+        }
+    }
+
+    private func paginationBar(total: Int) -> some View {
+        let page = clampedPage
+        let last = totalPages - 1
+        let firstShown = page * thumbsPerPage + 1
+        let lastShown = min(total, (page + 1) * thumbsPerPage)
+        return HStack(spacing: 6) {
+            Button { thumbPage = 0 } label: {
+                Image(systemName: "chevron.left.to.line")
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .disabled(page == 0)
+            Button { thumbPage = max(0, page - 1) } label: {
+                Image(systemName: "chevron.left")
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .disabled(page == 0)
+
+            Text("\(firstShown)–\(lastShown) of \(total)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(Palette.text)
+                .frame(minWidth: 110)
+
+            Button { thumbPage = min(last, page + 1) } label: {
+                Image(systemName: "chevron.right")
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .disabled(page == last)
+            Button { thumbPage = last } label: {
+                Image(systemName: "chevron.right.to.line")
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            .disabled(page == last)
+
+            Spacer(minLength: 6)
+
+            // Direct page jump.
+            Text("Page")
+                .font(.caption2).foregroundStyle(Palette.muted)
+            TextField("", value: Binding(
+                get: { page + 1 },
+                set: { thumbPage = min(max(0, $0 - 1), last) }
+            ), format: .number)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 44)
+                .multilineTextAlignment(.center)
+            Text("/ \(totalPages)")
+                .font(.caption2).foregroundStyle(Palette.muted)
+        }
+        .padding(.top, 2)
     }
 
     // MARK: - Plot column (right)

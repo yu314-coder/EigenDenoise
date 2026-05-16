@@ -8,6 +8,7 @@
 
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 import Observation
 
 @Observable
@@ -298,6 +299,165 @@ final class AppModel {
         // If we already have a working folder URL, default the open panel there.
         if let cur = folderURL { panel.directoryURL = cur }
         if panel.runModal() == .OK, let url = panel.url { loadFolder(url) }
+    }
+
+    // ---- Import: copy folder / files into managed storage --------------
+
+    /// Managed-dataset entry surfaced to the FolderView library grid.
+    struct ManagedDataset: Identifiable, Hashable, Sendable {
+        let id: URL
+        let url: URL
+        let name: String
+        let imageCount: Int
+        let totalBytes: Int64
+        let modified: Date
+        var formattedSize: String {
+            ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        }
+    }
+
+    /// List top-level subfolders of `storageURL` and their image counts /
+    /// sizes / mtime. Recursive size, non-recursive image count (matches the
+    /// pipeline, which loads from the immediate folder).
+    func listManagedDatasets() -> [ManagedDataset] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: storageURL.path)
+        else { return [] }
+        var out: [ManagedDataset] = []
+        for n in names where !n.hasPrefix(".") {
+            let url = storageURL.appendingPathComponent(n)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue
+            else { continue }
+            let images = ImageIO.listImages(in: url)
+            // Recursive byte-count for the whole subtree.
+            var bytes: Int64 = 0
+            if let it = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) {
+                for case let f as URL in it {
+                    let v = try? f.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                    if v?.isRegularFile == true { bytes += Int64(v?.fileSize ?? 0) }
+                }
+            }
+            let attrs = try? fm.attributesOfItem(atPath: url.path)
+            let mtime = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
+            out.append(ManagedDataset(id: url, url: url, name: n,
+                                        imageCount: images.count,
+                                        totalBytes: bytes, modified: mtime))
+        }
+        return out.sorted { $0.modified > $1.modified }
+    }
+
+    /// Move a managed dataset to the user's Trash. Returns true on success.
+    @discardableResult
+    func deleteManagedDataset(_ dataset: ManagedDataset) -> Bool {
+        let fm = FileManager.default
+        do {
+            var resulting: NSURL?
+            try fm.trashItem(at: dataset.url, resultingItemURL: &resulting)
+            log("trashed dataset \(dataset.name)")
+            // If the user trashed the currently-loaded folder, clear UI state.
+            if folderURL?.standardizedFileURL == dataset.url.standardizedFileURL {
+                folderURL = nil
+                folderSubfolders = []
+                imageNames = []
+                imageData = []
+                testFilename = ""
+            }
+            return true
+        } catch {
+            log("could not trash \(dataset.name): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Reveal a URL in Finder.
+    func revealInFinder(_ url: URL) {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Pick a folder of images in any location, copy every image inside
+    /// (recursively) into `storageURL/<source folder name>/`, then load it.
+    /// Designed to work under the App Store sandbox: the user-granted folder
+    /// is read once via security scope; the destination lives inside our
+    /// own Application Support container so the bookmarked path persists.
+    func importFolderCopy() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.message = "Pick a folder of images to import into your Storage"
+        guard panel.runModal() == .OK, let src = panel.url else { return }
+        let didStart = src.startAccessingSecurityScopedResource()
+        defer { if didStart { src.stopAccessingSecurityScopedResource() } }
+        let fm = FileManager.default
+        let baseName = src.lastPathComponent
+        let dest = uniqueSubfolder(named: baseName)
+        try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        var copied = 0
+        if let it = fm.enumerator(at: src, includingPropertiesForKeys: [.isRegularFileKey]) {
+            for case let f as URL in it {
+                let ext = f.pathExtension.lowercased()
+                guard ImageIO.imageExtensions.contains(ext) else { continue }
+                let target = dest.appendingPathComponent(f.lastPathComponent)
+                do {
+                    if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
+                    try fm.copyItem(at: f, to: target)
+                    copied += 1
+                } catch {
+                    EDLog.warn(.folder, "import copy failed for \(f.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+        }
+        log("imported \(copied) image(s) → \(dest.lastPathComponent)/")
+        if copied > 0 { loadFolder(dest) }
+    }
+
+    /// Pick one or more individual image files and copy them into a chosen
+    /// sub-folder of Storage, then load that folder.
+    func importFilesCopy(subfolder: String = "imported") {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.canCreateDirectories = false
+        panel.allowedContentTypes = [.image]
+        panel.message = "Pick image files to import into your Storage"
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls
+        guard !urls.isEmpty else { return }
+        let fm = FileManager.default
+        let dest = uniqueSubfolder(named: subfolder)
+        try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        var copied = 0
+        for f in urls {
+            let didStart = f.startAccessingSecurityScopedResource()
+            defer { if didStart { f.stopAccessingSecurityScopedResource() } }
+            let target = dest.appendingPathComponent(f.lastPathComponent)
+            do {
+                if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
+                try fm.copyItem(at: f, to: target)
+                copied += 1
+            } catch {
+                EDLog.warn(.folder, "import file failed for \(f.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        log("imported \(copied) file(s) → \(dest.lastPathComponent)/")
+        if copied > 0 { loadFolder(dest) }
+    }
+
+    /// Returns `storageURL/<name>` or `<name>-2`, `-3`, … if a directory
+    /// with that name already exists. Avoids merging into other datasets.
+    private func uniqueSubfolder(named name: String) -> URL {
+        let fm = FileManager.default
+        let safe = name.isEmpty ? "imported" : name
+        var candidate = storageURL.appendingPathComponent(safe, isDirectory: true)
+        var i = 2
+        while fm.fileExists(atPath: candidate.path) {
+            candidate = storageURL.appendingPathComponent("\(safe)-\(i)", isDirectory: true)
+            i += 1
+        }
+        return candidate
     }
 
     // ---- legacy hooks (kept so DenoiseView/FolderView etc. still compile,

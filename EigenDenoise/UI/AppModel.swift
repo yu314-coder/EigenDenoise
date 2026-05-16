@@ -109,18 +109,25 @@ final class AppModel {
         panel.message = "Pick a folder where downloaded image datasets will be stored"
         panel.directoryURL = storageURL
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        // Stop access on the previous bookmarked URL.
+        if storageNeedsScope { storageURL.stopAccessingSecurityScopedResource() }
+        // Honor the user's pick immediately, even if the bookmark write
+        // below throws — otherwise the UI silently keeps the old default
+        // path and every subsequent import / download lands in the wrong
+        // place. Bookmark persistence is best-effort.
+        storageURL = url
+        storageNeedsScope = url.startAccessingSecurityScopedResource()
+        // Make sure the destination exists on disk (e.g. external drive).
+        try? FileManager.default.createDirectory(at: url,
+                                                   withIntermediateDirectories: true)
         do {
             let bookmark = try url.bookmarkData(options: .withSecurityScope,
                                                   includingResourceValuesForKeys: nil,
                                                   relativeTo: nil)
             UserDefaults.standard.set(bookmark, forKey: AppModel.storageBookmarkKey)
-            // Stop access on the previous bookmarked URL if we had one.
-            if storageNeedsScope { storageURL.stopAccessingSecurityScopedResource() }
-            storageURL = url
-            storageNeedsScope = url.startAccessingSecurityScopedResource()
             log("storage → \(url.path)")
         } catch {
-            log("could not save storage bookmark: \(error.localizedDescription)")
+            log("storage → \(url.path) (bookmark save failed: \(error.localizedDescription) — choice will not persist across launches)")
         }
     }
 
@@ -158,7 +165,8 @@ final class AppModel {
         guard !urls.isEmpty else { log("no URLs to download"); return }
         guard !isDownloading else { log("a download is already running"); return }
         let dest = storageURL.appendingPathComponent(subfolder, isDirectory: true)
-        log("downloading \(urls.count) image(s) → \(dest.path)")
+        try? FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+        log("downloading \(urls.count) image(s) → \(dest.path) (storage=\(storageURL.path))")
         isDownloading = true
         downloadProgress = (0, urls.count, "")
         let captured = self
@@ -393,7 +401,13 @@ final class AppModel {
         let fm = FileManager.default
         let baseName = src.lastPathComponent
         let dest = uniqueSubfolder(named: baseName)
-        try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        log("import folder — source=\(src.path) → dest=\(dest.path) (storage=\(storageURL.path))")
+        do {
+            try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        } catch {
+            log("could not create destination \(dest.path): \(error.localizedDescription)")
+            return
+        }
         var copied = 0
         var usedNames = Set<String>()
         if let it = fm.enumerator(at: src, includingPropertiesForKeys: [.isRegularFileKey]) {
@@ -444,7 +458,13 @@ final class AppModel {
         guard !urls.isEmpty else { return }
         let fm = FileManager.default
         let dest = uniqueSubfolder(named: subfolder)
-        try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        log("import files — \(urls.count) file(s) → dest=\(dest.path) (storage=\(storageURL.path))")
+        do {
+            try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        } catch {
+            log("could not create destination \(dest.path): \(error.localizedDescription)")
+            return
+        }
         var copied = 0
         for f in urls {
             let didStart = f.startAccessingSecurityScopedResource()

@@ -44,12 +44,20 @@ struct FolderView: View {
                                 systemImage: "externaldrive.fill",
                                 subtitle: "Import your own folders, download curated datasets, and manage everything saved on disk. Folder & test-image selection lives in Image Processing.")
 
-                heroStatusCard
-                storageCard
-                importCard
-                managedLibraryCard
-                datasetGalleryCard
+                statusStrip
+
+                HStack(alignment: .top, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        addDataCard
+                        datasetGalleryCard
+                    }
+                    .frame(width: 360)
+
+                    managedLibraryCard
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
             }
+            .padding(.bottom, 8)
         }
         .alert("Move to Trash?", isPresented: Binding(
             get: { pendingDelete != nil },
@@ -70,7 +78,156 @@ struct FolderView: View {
         managedDatasets = model.listManagedDatasets()
     }
 
-    // MARK: - Hero status
+    // MARK: - Slim status strip
+
+    private var statusStrip: some View {
+        let hasFolder = model.folderURL != nil
+        return HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(LinearGradient(colors: [Palette.accent, Palette.accent2],
+                                          startPoint: .topLeading, endPoint: .bottomTrailing))
+                Image(systemName: hasFolder ? "checkmark.circle.fill" : "photo.stack")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 32, height: 32)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(hasFolder ? (model.folderURL?.lastPathComponent ?? "—") : "No folder loaded")
+                    .font(.callout.bold())
+                    .foregroundStyle(Palette.text)
+                    .lineLimit(1).truncationMode(.middle)
+                Text(hasFolder
+                    ? (model.folderURL?.deletingLastPathComponent().path ?? "")
+                    : "Pick a folder or download a curated dataset to begin.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(Palette.muted)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            statusPill(systemImage: "photo.stack", value: "\(model.imageCount)", label: "imgs", tint: Palette.accent)
+            statusPill(systemImage: "ruler",
+                       value: model.imageCount == 0 ? "—" : "\(model.imageH)×\(model.imageW)",
+                       label: "size", tint: .indigo)
+            statusPill(systemImage: "books.vertical",
+                       value: "\(model.folderSubfolders.count)",
+                       label: "subs", tint: .orange)
+
+            Button {
+                model.pickFolder()
+            } label: {
+                Label("Change folder…", systemImage: "folder.badge.gearshape")
+                    .font(.caption.bold())
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.cornerLg, style: .continuous)
+                .fill(Color.white)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cornerLg, style: .continuous)
+                .stroke(Palette.border, lineWidth: 0.6)
+        )
+        .shadow(color: .black.opacity(0.04), radius: 6, y: 2)
+    }
+
+    private func statusPill(systemImage: String, value: String, label: String, tint: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(tint)
+            Text(value)
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundStyle(Palette.text)
+            Text(label.uppercased())
+                .font(.system(size: 9, weight: .heavy))
+                .foregroundStyle(Palette.muted)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(Capsule().fill(tint.opacity(0.10)))
+    }
+
+    // MARK: - Combined "Add data" card (storage + import)
+
+    private var addDataCard: some View {
+        Card(title: "Add data",
+              systemImage: "tray.and.arrow.down.fill",
+              trailing: AnyView(
+                Pill(text: "Local copy", color: .teal, systemImage: "lock.shield")
+              )
+        ) {
+            // Storage location row.
+            HStack(spacing: 8) {
+                Image(systemName: "externaldrive.fill").foregroundStyle(Palette.accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("STORAGE")
+                        .font(.system(size: 9, weight: .heavy))
+                        .foregroundStyle(Palette.muted)
+                    Text(model.storageURL.path)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Palette.text)
+                        .lineLimit(1).truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 6)
+                Button { model.pickStorageLocation() } label: { Image(systemName: "folder.badge.gearshape") }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Change storage location")
+                Button { model.resetStorageToDefault() } label: { Image(systemName: "arrow.counterclockwise") }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Reset to default")
+                Button { model.revealInFinder(model.storageURL) } label: { Image(systemName: "macwindow") }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Reveal Storage in Finder")
+            }
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.cornerMd, style: .continuous)
+                    .fill(Color(white: 0.97))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.cornerMd, style: .continuous)
+                    .stroke(Palette.border, lineWidth: 0.5)
+            )
+
+            // Import tiles.
+            HStack(spacing: 8) {
+                importTile(
+                    title: "Import folder",
+                    subtitle: "Recursive copy",
+                    systemImage: "folder.badge.plus",
+                    tint: .teal,
+                    primary: true
+                ) {
+                    model.importFolderCopy()
+                    refreshLibrary()
+                }
+                importTile(
+                    title: "Import images",
+                    subtitle: "Pick files",
+                    systemImage: "photo.badge.plus",
+                    tint: .indigo,
+                    primary: false
+                ) {
+                    model.importFilesCopy(subfolder: lastImportedSubfolderName)
+                    refreshLibrary()
+                }
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle").foregroundStyle(Palette.muted).font(.caption2)
+                Text("Imports are sandboxed inside Storage and survive restarts.")
+                    .font(.caption2).foregroundStyle(Palette.muted)
+            }
+        }
+    }
+
+    // MARK: - Hero status (legacy, no longer rendered)
 
     private var heroStatusCard: some View {
         let hasFolder = model.folderURL != nil
@@ -215,8 +372,10 @@ struct FolderView: View {
             Text("Pick a curated dataset, or paste your own URLs. Files save to **Storage / sub-folder** and auto-load when complete.")
                 .font(.caption).foregroundStyle(Palette.muted)
 
-            // Modern preset gallery — 3 large cards.
-            HStack(spacing: 10) {
+            // Preset gallery — adaptive grid wraps to fit the column width.
+            LazyVGrid(columns: [
+                GridItem(.adaptive(minimum: 145, maximum: 200), spacing: 8)
+            ], alignment: .leading, spacing: 8) {
                 ForEach(presets) { preset in
                     presetTile(preset)
                 }
